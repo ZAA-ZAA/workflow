@@ -7,8 +7,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "9999:8000"
+    env_file:
+      - .env
     environment:
-      # Set your OpenAI key here or export in the shell before running docker compose.
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped
     # Uncomment to mount local code for live editing
