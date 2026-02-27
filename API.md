@@ -200,6 +200,59 @@ The API also includes:
 - `POST /agent/chat` - Basic OpenAI chat
 - `POST /agent/zoey/chat` - Zoey agent with tool calling
 - Leave Request Workflow: `POST /leave/request`, `POST /leave/manager_reply`, `GET /leave/status/{request_id}`, `GET /leave/employees/{employee_id}` (see below)
+- YouTube Converter: `POST /converter/convert`, `GET /converter/download/{path}` (see below)
+
+---
+
+## 🎵 YouTube Converter Workflow
+
+Convert or download YouTube / YouTube Music to **MP3** or **MP4**. Supports single video or **playlist**; playlists are returned as a zip file.
+
+**Requirements:** `yt-dlp` (pip) and **ffmpeg** (system). Docker image includes ffmpeg.
+
+### POST `/converter/convert`
+
+**Request body:**
+```json
+{"url": "https://www.youtube.com/watch?v=VIDEO_ID", "format": "mp3"}
+```
+- `url`: YouTube or YouTube Music link (video or playlist).
+- `format`: `"mp3"` (extract audio) or `"mp4"` (download video).
+
+**Response (success):**
+```json
+{"status": "completed", "download_path": "JOB_ID/filename.mp3", "job_id": "abc12def", "error": null}
+```
+Use `download_path` in the download URL below.
+
+**Single video:** one file (e.g. `job_id/title.mp3`). **Playlist:** multiple files zipped as `job_id/job_id.zip`.
+
+### GET `/converter/download/{file_path}`
+
+Download the converted file or zip. `file_path` is the value of `download_path` from the convert response (e.g. `abc12def/title.mp3` or `abc12def/abc12def.zip`).
+
+**Example (convert then download):**
+```bash
+# Convert to MP3
+curl -X POST "http://localhost:9999/converter/convert" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "format": "mp3"}'
+
+# Response: {"status":"completed","download_path":"a1b2c3d4/Video Title.mp3","job_id":"a1b2c3d4",...}
+
+# Download the file (use the download_path from response)
+curl -o "downloaded.mp3" "http://localhost:9999/converter/download/a1b2c3d4/Video%20Title.mp3"
+```
+
+**Playlist (MP3, then zip):**
+```bash
+curl -X POST "http://localhost:9999/converter/convert" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.youtube.com/playlist?list=PLxxx", "format": "mp3"}'
+# Then download the returned download_path (e.g. job_id/job_id.zip)
+```
+
+**Optional env:** `CONVERTER_OUTPUT_DIR` – directory for converted files (default: `./data/converter_output`).
 
 ---
 

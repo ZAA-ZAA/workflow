@@ -2,13 +2,16 @@ import json
 import os
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from openai import OpenAI
 
 from agents import execute_tool_by_name, get_tool_specs
 from app.agents.zoey_agent import create_zoey_agent
+from app.converter_config import safe_download_path
 from app.leave_request_db import get_employee, get_leave_request
 from workflow.basic_workflow import run_workflow
+from workflow.converter_workflow import run_converter_workflow
 from workflow.leave_request_workflow import run_manager_reply_flow, run_request_flow, run_request_flow_with_wait
 
 app = FastAPI()
@@ -40,6 +43,11 @@ class ManagerReplyRequest(BaseModel):
     request_id: str
     decision: str
     comment: str = ""
+
+
+class ConverterRequest(BaseModel):
+    url: str
+    format: str  # "mp3" or "mp4"
 
 
 def _get_openai_client() -> OpenAI:
@@ -209,6 +217,27 @@ def leave_employee(employee_id: str):
         "sick_leave_balance": emp.get("sick_leave_balance"),
         "leave_history": history[-10:],
     }
+
+
+@app.post("/converter/convert")
+def converter_convert(request: ConverterRequest):
+    """
+    YouTube converter workflow: validate URL (YouTube/YT Music), download as MP3 or MP4.
+    Supports single video or playlist; playlists are zipped. Returns download_path for GET /converter/download/<path>.
+    """
+    result = run_converter_workflow(url=request.url, format=request.format)
+    if result.get("status") != "completed":
+        raise HTTPException(status_code=400, detail=result.get("error", "Conversion failed"))
+    return result
+
+
+@app.get("/converter/download/{file_path:path}")
+def converter_download(file_path: str):
+    """Download a converted file or zip by path returned from POST /converter/convert (e.g. job_id/file.mp3 or job_id/job_id.zip)."""
+    path = safe_download_path(file_path)
+    if not path:
+        raise HTTPException(status_code=404, detail="File not found or path invalid")
+    return FileResponse(path, filename=path.name)
 
 
 @app.post("/workflow/math")
