@@ -15,3 +15,6 @@ services:
     # Uncomment to mount local code for live editing
     # volumes:
     #   - .:/app
+    # Optional: mount Gmail OAuth credentials for /email-task/gmail/poll
+    #   - ./credentials.json:/app/credentials.json:ro
+    #   - ./data:/app/data

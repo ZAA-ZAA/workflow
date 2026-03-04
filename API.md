@@ -490,3 +490,70 @@ Leave request nodes live under `workflow/nodes/leave_request/`:
 - **Academic / prototype:** A JSON mock DB in the same project is **acceptable and often better**: simple, no extra services, easy to demo and grade. Use it when the goal is to show workflow logic, APIs, and human-in-the-loop behaviour.
 - **When to split:** Use a separate DB (or DB API service) when you need real concurrency, audit trails, backups, or multiple apps sharing the same data. In industry, the â€œleaveâ€ service would often call an HR/identity API and a proper database; the workflow you built can stay the same, with only the data layer (e.g. `app/leave_request_db.py`) swapped to use that API/DB.
 
+
+---
+
+## Email -> Task Extractor Workflow (NEW)
+
+### Endpoints
+
+- `POST /email-task/extract`
+  - Simulated Gmail mode (manual email forwarding into API).
+  - Input: `subject`, `from`, `body`, optional `received_at`.
+  - Output: extracted tasks + created task count.
+- `GET /email-task/tasks`
+  - List all tasks. Optional query param: `status=PENDING` or `status=DONE`.
+- `POST /email-task/mark_done`
+  - Mark one task as done using `task_id`.
+- `POST /email-task/gmail/poll` (optional OAuth Gmail API mode)
+  - Polls Gmail inbox for new messages and runs extraction workflow.
+
+### Node Flow
+
+`input_validate -> extract_tasks_agent -> normalize_and_dedupe -> persist_tasks -> optional_create_calendar_event -> send_summary_email`
+
+### Mock Storage Files
+
+- `data/tasks.json`
+- `data/email_state.json`
+
+### Curl tests
+
+1. Simulated email extraction:
+
+```bash
+curl -X POST "http://localhost:9999/email-task/extract" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "from": "manager@company.com",
+    "subject": "Sprint follow-ups for Friday",
+    "body": "Hi team, please submit the sprint report by Friday. Also schedule client demo tomorrow 3pm and renew SSL cert before Mar 10."
+  }'
+```
+
+2. List tasks:
+
+```bash
+curl "http://localhost:9999/email-task/tasks"
+```
+
+3. Mark task done:
+
+```bash
+curl -X POST "http://localhost:9999/email-task/mark_done" \\
+  -H "Content-Type: application/json" \\
+  -d '{"task_id":"task-REPLACE_ME"}'
+```
+
+4. Optional Gmail poll:
+
+```bash
+curl -X POST "http://localhost:9999/email-task/gmail/poll" \\
+  -H "Content-Type: application/json" \\
+  -d '{"max_results":10,"query":"newer_than:2d"}'
+```
+
+### Calendar integration status
+
+- Current build includes `optional_create_calendar_event_node.py` as a stub.
+- Future plug-in: Google Calendar API `events.insert` using due date/time from each task.

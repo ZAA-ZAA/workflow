@@ -4,14 +4,16 @@ import threading
 import time
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from openai import OpenAI
 
 from agents import execute_tool_by_name, get_tool_specs
 from app.agents.zoey_agent import create_zoey_agent
+from app.email_task_store import list_tasks, mark_task_done
 from app.leave_request_db import get_employee, get_leave_request
 from app.leave_request_gmail_processor import process_all_leave_emails
 from workflow.basic_workflow import run_workflow
+from workflow.email_task_workflow import run_email_task_extractor_flow, run_email_task_gmail_poll
 from workflow.leave_request_workflow import run_manager_reply_flow, run_request_flow, run_request_flow_with_wait
 
 app = FastAPI()
@@ -50,6 +52,25 @@ class ManagerReplyRequest(BaseModel):
     request_id: str
     decision: str
     comment: str = ""
+
+
+class EmailTaskExtractRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    subject: str = ""
+    from_email: str = Field(alias="from")
+    body: str = ""
+    received_at: str | None = None
+
+
+class EmailTaskMarkDoneRequest(BaseModel):
+    task_id: str
+
+
+class EmailTaskGmailPollRequest(BaseModel):
+    max_results: int = 10
+    query: str | None = None
+    allow_interactive_auth: bool = False
 
 
 def _get_openai_client() -> OpenAI:
@@ -373,3 +394,57 @@ def math_workflow(request: MathWorkflowRequest):
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/email-task/extract")
+def email_task_extract(request: EmailTaskExtractRequest):
+    """
+    Mode A (simulated Gmail): send subject/from/body manually and extract tasks.
+    """
+    result = run_email_task_extractor_flow(
+        from_email=request.from_email,
+        subject=request.subject,
+        body=request.body,
+        received_at=request.received_at,
+    )
+    if result.get("status") == "VALIDATION_FAILED":
+        raise HTTPException(status_code=400, detail=result.get("errors", ["Invalid input"]))
+    return result
+
+
+@app.get("/email-task/tasks")
+def email_task_list(status: str | None = None):
+    """
+    List tasks from mock storage (optionally filtered by status).
+    """
+    rows = list_tasks(status=status)
+    return {
+        "count": len(rows),
+        "tasks": rows,
+    }
+
+
+@app.post("/email-task/mark_done")
+def email_task_mark_done(request: EmailTaskMarkDoneRequest):
+    """
+    Mark one extracted task as DONE.
+    """
+    updated = mark_task_done(request.task_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Task not found: {request.task_id}")
+    return {"status": "DONE", "task": updated}
+
+
+@app.post("/email-task/gmail/poll")
+def email_task_gmail_poll(request: EmailTaskGmailPollRequest):
+    """
+    Mode B (optional): poll Gmail API for new messages and extract tasks.
+    """
+    result = run_email_task_gmail_poll(
+        max_results=request.max_results,
+        query=request.query,
+        allow_interactive_auth=request.allow_interactive_auth,
+    )
+    if result.get("status") == "GMAIL_NOT_READY":
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result

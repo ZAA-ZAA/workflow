@@ -268,3 +268,15 @@ docker-compose exec app bash
 - **Tool calling**: Integrate external APIs and tools
 - **Parallel processing**: Execute multiple nodes concurrently
 - **Error handling**: Add retry logic and fallback paths
+
+## Email -> Task Extractor Workflow
+
+New workflow module: `workflow/email_task_workflow.py`
+
+- Converts one incoming email into 0..N tasks.
+- Uses dedicated nodes in `workflow/nodes/email_task_extractor/`.
+- Stores task records in `data/tasks.json`.
+- Stores dedupe/Gmail progress state in `data/email_state.json`.
+- Supports:
+  - Simulated mode via API (`POST /email-task/extract`)
+  - Optional Gmail API polling (`POST /email-task/gmail/poll`)
