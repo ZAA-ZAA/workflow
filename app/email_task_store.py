@@ -195,3 +195,34 @@ def append_processed_gmail_message_id(message_id: str, max_items: int = 2000) ->
         state["processed_gmail_message_ids"] = ids
         state["last_processed_gmail_message_id"] = normalized
         save_email_state(state)
+
+
+def append_processed_gmail_message_ids(message_ids: list[str], max_items: int = 2000) -> int:
+    """
+    Append multiple Gmail message ids and return how many were newly added.
+    """
+    cleaned = []
+    for value in message_ids:
+        normalized = (value or "").strip()
+        if normalized:
+            cleaned.append(normalized)
+    if not cleaned:
+        return 0
+
+    with _LOCK:
+        state = get_email_state()
+        ids = [v for v in state.get("processed_gmail_message_ids", []) if isinstance(v, str)]
+        existing = set(ids)
+        added = 0
+        for message_id in cleaned:
+            if message_id in existing:
+                continue
+            ids.append(message_id)
+            existing.add(message_id)
+            added += 1
+        if len(ids) > max_items:
+            ids = ids[-max_items:]
+        state["processed_gmail_message_ids"] = ids
+        state["last_processed_gmail_message_id"] = ids[-1] if ids else state.get("last_processed_gmail_message_id")
+        save_email_state(state)
+        return added

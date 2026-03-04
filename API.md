@@ -505,8 +505,15 @@ Leave request nodes live under `workflow/nodes/leave_request/`:
   - List all tasks. Optional query param: `status=PENDING` or `status=DONE`.
 - `POST /email-task/mark_done`
   - Mark one task as done using `task_id`.
-- `POST /email-task/gmail/poll` (optional OAuth Gmail API mode)
+- `POST /email-task/gmail/poll`
   - Polls Gmail inbox for new messages and runs extraction workflow.
+  - Supports `mode=imap` (app password, leave-style) or `mode=oauth` (Google Cloud OAuth).
+- `GET /email-task/gmail/poller/status`
+  - Shows background poller status for this workflow.
+- `POST /email-task/gmail/poller/start`
+  - Starts background Gmail polling loop for this workflow.
+- `POST /email-task/gmail/poller/stop`
+  - Stops background Gmail polling loop for this workflow.
 
 ### Node Flow
 
@@ -550,10 +557,29 @@ curl -X POST "http://localhost:9999/email-task/mark_done" \\
 ```bash
 curl -X POST "http://localhost:9999/email-task/gmail/poll" \\
   -H "Content-Type: application/json" \\
-  -d '{"max_results":10,"query":"newer_than:2d"}'
+  -d '{"mode":"imap","max_results":10,"query":"task,action","skip_existing_on_first_run":true}'
+```
+
+5. Optional Gmail background poller start (continuous mode):
+
+```bash
+curl -X POST "http://localhost:9999/email-task/gmail/poller/start?interval_seconds=5&mode=imap"
+```
+
+6. Check poller status:
+
+```bash
+curl "http://localhost:9999/email-task/gmail/poller/status"
+```
+
+7. Stop poller:
+
+```bash
+curl -X POST "http://localhost:9999/email-task/gmail/poller/stop"
 ```
 
 ### Calendar integration status
 
 - Current build includes `optional_create_calendar_event_node.py` as a stub.
 - Future plug-in: Google Calendar API `events.insert` using due date/time from each task.
+- No calendar event is auto-created yet in Google Calendar until that stub is implemented.

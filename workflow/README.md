@@ -279,4 +279,5 @@ New workflow module: `workflow/email_task_workflow.py`
 - Stores dedupe/Gmail progress state in `data/email_state.json`.
 - Supports:
   - Simulated mode via API (`POST /email-task/extract`)
-  - Optional Gmail API polling (`POST /email-task/gmail/poll`)
+  - Optional Gmail polling (`POST /email-task/gmail/poll`) with `mode=imap` or `mode=oauth`
+  - Optional background Gmail poller (`POST /email-task/gmail/poller/start`)

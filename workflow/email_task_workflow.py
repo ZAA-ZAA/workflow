@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+
 from app.email_task_gmail_api import fetch_unprocessed_gmail_emails
+from app.email_task_gmail_imap import fetch_unprocessed_imap_emails
 from workflow.nodes.email_task_extractor import (
     EmailTaskExtractorState,
     extract_tasks_agent_node,
@@ -79,13 +82,26 @@ def run_email_task_gmail_poll(
     max_results: int = 10,
     query: str | None = None,
     allow_interactive_auth: bool = False,
+    skip_existing_on_first_run: bool | None = None,
+    mode: str | None = None,
 ) -> dict:
-    """Mode B: Poll Gmail API for unprocessed emails and extract tasks."""
-    fetched = fetch_unprocessed_gmail_emails(
-        max_results=max_results,
-        query=query,
-        allow_interactive_auth=allow_interactive_auth,
-    )
+    """Poll Gmail inbox for unprocessed emails and extract tasks."""
+    selected_mode = (mode or os.getenv("EMAIL_TASK_GMAIL_MODE", "imap")).strip().lower()
+    if selected_mode not in ("imap", "oauth"):
+        selected_mode = "imap"
+
+    if selected_mode == "imap":
+        fetched = fetch_unprocessed_imap_emails(
+            max_results=max_results,
+            query=query,
+        )
+    else:
+        fetched = fetch_unprocessed_gmail_emails(
+            max_results=max_results,
+            query=query,
+            allow_interactive_auth=allow_interactive_auth,
+            skip_existing_on_first_run=skip_existing_on_first_run,
+        )
     if not fetched.get("ok"):
         return {
             "status": "GMAIL_NOT_READY",
@@ -93,6 +109,7 @@ def run_email_task_gmail_poll(
             "processed_emails": 0,
             "created_tasks": 0,
             "runs": [],
+            "mode": fetched.get("mode") or selected_mode,
         }
 
     runs: list[dict] = []
@@ -118,9 +135,11 @@ def run_email_task_gmail_poll(
 
     return {
         "status": "COMPLETED",
-        "message": "Gmail poll finished",
+        "message": fetched.get("message") or "Gmail poll finished",
         "processed_emails": len(fetched.get("emails", [])),
         "created_tasks": created_tasks,
         "runs": runs,
         "query": fetched.get("query"),
+        "bootstrapped_skip": int(fetched.get("bootstrapped_skip") or 0),
+        "mode": fetched.get("mode") or selected_mode,
     }

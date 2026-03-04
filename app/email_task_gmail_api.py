@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.email_task_store import get_email_state
+from app.email_task_store import append_processed_gmail_message_ids, get_email_state
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -59,6 +59,15 @@ def _extract_text_body(payload: dict | None) -> str:
     if body.get("data"):
         return _decode_base64url(body.get("data"))
     return ""
+
+
+def _skip_existing_on_first_run() -> bool:
+    # Default ON: prevents replaying historical inbox messages on first startup.
+    return os.getenv("EMAIL_TASK_GMAIL_SKIP_EXISTING_ON_FIRST_RUN", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _get_gmail_service(allow_interactive_auth: bool = False):
@@ -117,6 +126,7 @@ def fetch_unprocessed_gmail_emails(
     max_results: int = 10,
     query: str | None = None,
     allow_interactive_auth: bool = False,
+    skip_existing_on_first_run: bool | None = None,
 ) -> dict:
     """
     Fetch unprocessed Gmail messages as email payload objects.
@@ -141,6 +151,19 @@ def fetch_unprocessed_gmail_emails(
         refs = response.get("messages", []) or []
     except Exception as exc:
         return {"ok": False, "message": f"Gmail list-messages failed: {exc}", "emails": []}
+
+    skip_first_run = _skip_existing_on_first_run() if skip_existing_on_first_run is None else skip_existing_on_first_run
+    ref_ids = [(ref.get("id") or "").strip() for ref in refs if (ref.get("id") or "").strip()]
+    if not already_processed and ref_ids and skip_first_run:
+        added = append_processed_gmail_message_ids(ref_ids)
+        return {
+            "ok": True,
+            "message": "Bootstrapped Gmail state. Skipped existing messages on first run.",
+            "emails": [],
+            "fetched_count": 0,
+            "query": gmail_query,
+            "bootstrapped_skip": added,
+        }
 
     refs = list(reversed(refs))
     emails: list[dict] = []

@@ -24,6 +24,16 @@ _GMAIL_POLLER_STOP_EVENT = threading.Event()
 _GMAIL_POLLER_LAST_SUMMARY: dict | None = None
 _GMAIL_POLLER_LAST_RUN_AT: float | None = None
 _GMAIL_POLLER_CYCLE_COUNT: int = 0
+_EMAIL_TASK_GMAIL_POLLER_STARTED = False
+_EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS = 30
+_EMAIL_TASK_GMAIL_POLLER_THREAD: threading.Thread | None = None
+_EMAIL_TASK_GMAIL_POLLER_STOP_EVENT = threading.Event()
+_EMAIL_TASK_GMAIL_POLLER_LAST_SUMMARY: dict | None = None
+_EMAIL_TASK_GMAIL_POLLER_LAST_RUN_AT: float | None = None
+_EMAIL_TASK_GMAIL_POLLER_CYCLE_COUNT: int = 0
+_EMAIL_TASK_GMAIL_POLLER_QUERY: str | None = None
+_EMAIL_TASK_GMAIL_POLLER_MAX_RESULTS: int = 10
+_EMAIL_TASK_GMAIL_POLLER_MODE: str = "imap"
 
 
 class ChatRequest(BaseModel):
@@ -71,6 +81,8 @@ class EmailTaskGmailPollRequest(BaseModel):
     max_results: int = 10
     query: str | None = None
     allow_interactive_auth: bool = False
+    skip_existing_on_first_run: bool | None = None
+    mode: str | None = None
 
 
 def _get_openai_client() -> OpenAI:
@@ -83,6 +95,18 @@ def _get_openai_client() -> OpenAI:
 
 def _gmail_intake_enabled() -> bool:
     return os.getenv("ENABLE_GMAIL_LEAVE_INTAKE", "1").strip().lower() in ("1", "true", "yes")
+
+
+def _email_task_gmail_intake_enabled() -> bool:
+    return os.getenv("ENABLE_GMAIL_EMAIL_TASK_INTAKE", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        value = int(os.getenv(name, str(default)).strip())
+    except Exception:
+        value = default
+    return max(minimum, value)
 
 
 def _gmail_intake_loop() -> None:
@@ -115,11 +139,44 @@ def _gmail_intake_loop() -> None:
     print("[Leave Gmail] Loop stopped.")
 
 
+def _email_task_gmail_intake_loop() -> None:
+    global _EMAIL_TASK_GMAIL_POLLER_LAST_SUMMARY, _EMAIL_TASK_GMAIL_POLLER_LAST_RUN_AT, _EMAIL_TASK_GMAIL_POLLER_CYCLE_COUNT
+    print(f"[Email Task Gmail] Loop running. Interval: {_EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS}s")
+    while not _EMAIL_TASK_GMAIL_POLLER_STOP_EVENT.is_set():
+        try:
+            _EMAIL_TASK_GMAIL_POLLER_CYCLE_COUNT += 1
+            summary = run_email_task_gmail_poll(
+                max_results=_EMAIL_TASK_GMAIL_POLLER_MAX_RESULTS,
+                query=_EMAIL_TASK_GMAIL_POLLER_QUERY,
+                allow_interactive_auth=False,
+                skip_existing_on_first_run=None,
+                mode=_EMAIL_TASK_GMAIL_POLLER_MODE,
+            )
+            _EMAIL_TASK_GMAIL_POLLER_LAST_SUMMARY = summary
+            _EMAIL_TASK_GMAIL_POLLER_LAST_RUN_AT = time.time()
+            if any(
+                [
+                    int(summary.get("processed_emails", 0)),
+                    int(summary.get("created_tasks", 0)),
+                    int(summary.get("bootstrapped_skip", 0)),
+                ]
+            ):
+                print(f"[Email Task Gmail] Poll summary: {summary}")
+            else:
+                print(f"[Email Task Gmail] Poll tick #{_EMAIL_TASK_GMAIL_POLLER_CYCLE_COUNT}: no new email-task messages")
+        except Exception as exc:
+            print(f"[Email Task Gmail] Poller error: {exc}")
+        _EMAIL_TASK_GMAIL_POLLER_STOP_EVENT.wait(_EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS)
+    print("[Email Task Gmail] Loop stopped.")
+
+
 @app.on_event("startup")
 def start_gmail_intake_poller():
-    # Auto-start continuous polling when app starts.
-    started = _start_gmail_intake_poller()
-    print(f"[Leave Gmail] Startup poller state: {started}")
+    # Auto-start continuous pollers when app starts.
+    started_leave = _start_gmail_intake_poller()
+    print(f"[Leave Gmail] Startup poller state: {started_leave}")
+    started_email_task = _start_email_task_gmail_poller()
+    print(f"[Email Task Gmail] Startup poller state: {started_email_task}")
 
 
 def _start_gmail_intake_poller(interval_seconds: int | None = None, force: bool = False) -> dict:
@@ -156,6 +213,76 @@ def _stop_gmail_intake_poller() -> dict:
     _GMAIL_POLLER_STARTED = False
     _GMAIL_POLLER_THREAD = None
     return {"stopped": True, "message": "Gmail poller stopping"}
+
+
+def _start_email_task_gmail_poller(
+    interval_seconds: int | None = None,
+    force: bool = False,
+    max_results: int | None = None,
+    query: str | None = None,
+    mode: str | None = None,
+) -> dict:
+    global _EMAIL_TASK_GMAIL_POLLER_STARTED, _EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS, _EMAIL_TASK_GMAIL_POLLER_THREAD, _EMAIL_TASK_GMAIL_POLLER_QUERY, _EMAIL_TASK_GMAIL_POLLER_MAX_RESULTS, _EMAIL_TASK_GMAIL_POLLER_MODE
+    if not _email_task_gmail_intake_enabled() and not force:
+        return {"started": False, "enabled": False, "message": "Email-task Gmail intake disabled by env"}
+
+    if interval_seconds is None:
+        _EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS = _env_int("EMAIL_TASK_GMAIL_POLL_SECONDS", 30)
+    elif interval_seconds > 0:
+        _EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS = int(interval_seconds)
+
+    if max_results is None:
+        _EMAIL_TASK_GMAIL_POLLER_MAX_RESULTS = _env_int("EMAIL_TASK_GMAIL_MAX_RESULTS", 10)
+    elif max_results > 0:
+        _EMAIL_TASK_GMAIL_POLLER_MAX_RESULTS = int(max_results)
+
+    if query is None:
+        _EMAIL_TASK_GMAIL_POLLER_QUERY = (os.getenv("EMAIL_TASK_GMAIL_QUERY", "newer_than:7d") or "").strip() or None
+    else:
+        _EMAIL_TASK_GMAIL_POLLER_QUERY = (query or "").strip() or None
+
+    if mode is None:
+        _EMAIL_TASK_GMAIL_POLLER_MODE = (os.getenv("EMAIL_TASK_GMAIL_MODE", "imap") or "imap").strip().lower()
+    else:
+        _EMAIL_TASK_GMAIL_POLLER_MODE = (mode or "imap").strip().lower()
+    if _EMAIL_TASK_GMAIL_POLLER_MODE not in ("imap", "oauth"):
+        _EMAIL_TASK_GMAIL_POLLER_MODE = "imap"
+
+    if _EMAIL_TASK_GMAIL_POLLER_STARTED:
+        return {
+            "started": True,
+            "enabled": _email_task_gmail_intake_enabled(),
+            "interval_seconds": _EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS,
+            "max_results": _EMAIL_TASK_GMAIL_POLLER_MAX_RESULTS,
+            "query": _EMAIL_TASK_GMAIL_POLLER_QUERY,
+            "mode": _EMAIL_TASK_GMAIL_POLLER_MODE,
+            "message": "Email-task Gmail poller already running",
+        }
+
+    _EMAIL_TASK_GMAIL_POLLER_STOP_EVENT.clear()
+    thread = threading.Thread(target=_email_task_gmail_intake_loop, daemon=True, name="email-task-gmail-poller")
+    thread.start()
+    _EMAIL_TASK_GMAIL_POLLER_THREAD = thread
+    _EMAIL_TASK_GMAIL_POLLER_STARTED = True
+    return {
+        "started": True,
+        "enabled": _email_task_gmail_intake_enabled(),
+        "interval_seconds": _EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS,
+        "max_results": _EMAIL_TASK_GMAIL_POLLER_MAX_RESULTS,
+        "query": _EMAIL_TASK_GMAIL_POLLER_QUERY,
+        "mode": _EMAIL_TASK_GMAIL_POLLER_MODE,
+        "message": "Email-task Gmail poller started",
+    }
+
+
+def _stop_email_task_gmail_poller() -> dict:
+    global _EMAIL_TASK_GMAIL_POLLER_STARTED, _EMAIL_TASK_GMAIL_POLLER_THREAD
+    if not _EMAIL_TASK_GMAIL_POLLER_STARTED:
+        return {"stopped": False, "message": "Email-task Gmail poller is not running"}
+    _EMAIL_TASK_GMAIL_POLLER_STOP_EVENT.set()
+    _EMAIL_TASK_GMAIL_POLLER_STARTED = False
+    _EMAIL_TASK_GMAIL_POLLER_THREAD = None
+    return {"stopped": True, "message": "Email-task Gmail poller stopping"}
 
 
 @app.get("/health")
@@ -438,13 +565,61 @@ def email_task_mark_done(request: EmailTaskMarkDoneRequest):
 @app.post("/email-task/gmail/poll")
 def email_task_gmail_poll(request: EmailTaskGmailPollRequest):
     """
-    Mode B (optional): poll Gmail API for new messages and extract tasks.
+    Poll Gmail inbox for new messages and extract tasks.
+    Supports mode='imap' (app password) or mode='oauth' (Gmail API).
     """
     result = run_email_task_gmail_poll(
         max_results=request.max_results,
         query=request.query,
         allow_interactive_auth=request.allow_interactive_auth,
+        skip_existing_on_first_run=request.skip_existing_on_first_run,
+        mode=request.mode,
     )
     if result.get("status") == "GMAIL_NOT_READY":
         raise HTTPException(status_code=400, detail=result.get("message"))
     return result
+
+
+@app.get("/email-task/gmail/poller/status")
+def email_task_gmail_poller_status():
+    """
+    Returns Email-task Gmail poller runtime status.
+    """
+    return {
+        "enabled_by_env": _email_task_gmail_intake_enabled(),
+        "running": _EMAIL_TASK_GMAIL_POLLER_STARTED,
+        "interval_seconds": _EMAIL_TASK_GMAIL_POLLER_INTERVAL_SECONDS,
+        "max_results": _EMAIL_TASK_GMAIL_POLLER_MAX_RESULTS,
+        "query": _EMAIL_TASK_GMAIL_POLLER_QUERY,
+        "mode": _EMAIL_TASK_GMAIL_POLLER_MODE,
+        "cycle_count": _EMAIL_TASK_GMAIL_POLLER_CYCLE_COUNT,
+        "last_run_at_unix": _EMAIL_TASK_GMAIL_POLLER_LAST_RUN_AT,
+        "last_summary": _EMAIL_TASK_GMAIL_POLLER_LAST_SUMMARY,
+    }
+
+
+@app.post("/email-task/gmail/poller/start")
+def email_task_gmail_poller_start(
+    force: bool = False,
+    interval_seconds: int | None = None,
+    max_results: int | None = None,
+    query: str | None = None,
+    mode: str | None = None,
+):
+    """
+    Start Email-task Gmail background poller manually.
+    Use force=true to start even if ENABLE_GMAIL_EMAIL_TASK_INTAKE is off.
+    """
+    return _start_email_task_gmail_poller(
+        interval_seconds=interval_seconds,
+        force=force,
+        max_results=max_results,
+        query=query,
+        mode=mode,
+    )
+
+
+@app.post("/email-task/gmail/poller/stop")
+def email_task_gmail_poller_stop():
+    """Stop Email-task Gmail background poller."""
+    return _stop_email_task_gmail_poller()
