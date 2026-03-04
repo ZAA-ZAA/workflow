@@ -17,8 +17,8 @@
     {
       "employee_id": "E002",
       "name": "Carlos Rivera",
-      "email": "carlos.rivera@company.com",
-      "manager_email": "bob.manager@company.com",
+      "email": "zoenaldueza@gmail.com",
+      "manager_email": "alduezazoen77@gmail.com",
       "department": "Engineering",
       "annual_leave_entitlement": 20,
       "annual_leave_used": 12,
@@ -31,8 +31,8 @@
     {
       "employee_id": "E003",
       "name": "Diana Chen",
-      "email": "diana.chen@company.com",
-      "manager_email": "bob.manager@company.com",
+      "email": "zoenaldueza@gmail.com",
+      "manager_email": "alduezazoen77@gmail.com",
       "department": "Product",
       "annual_leave_entitlement": 22,
       "annual_leave_used": 0,

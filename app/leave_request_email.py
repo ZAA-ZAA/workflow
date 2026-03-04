@@ -25,7 +25,9 @@ def send_leave_email(to: str, subject: str, body: str) -> tuple[bool, str]:
     from_addr = os.getenv("GMAIL_FROM", "").strip() or to
 
     if not use_gmail or not password:
-        return True, "Email logged (Gmail not configured; set SEND_LEAVE_EMAILS_VIA_GMAIL=1 and GMAIL_APP_PASSWORD to send)."
+        msg = "Email logged (Gmail not configured; set SEND_LEAVE_EMAILS_VIA_GMAIL=1 and GMAIL_APP_PASSWORD to send)."
+        print(f"[Leave Email] Result: {msg}")
+        return True, msg
 
     try:
         msg = MIMEMultipart()
@@ -36,6 +38,10 @@ def send_leave_email(to: str, subject: str, body: str) -> tuple[bool, str]:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(from_addr, password)
             server.sendmail(from_addr, [to], msg.as_string())
-        return True, "Email sent via Gmail."
+        out = "Email sent via Gmail."
+        print(f"[Leave Email] Result: {out}")
+        return True, out
     except Exception as e:
-        return False, str(e)
+        err = str(e)
+        print(f"[Leave Email] ERROR sending via Gmail: {err}")
+        return False, err

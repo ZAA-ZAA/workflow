@@ -23,6 +23,17 @@ workflow/
 
 ## 📝 Workflows
 
+### `leave_request_workflow.py` - Leave Request + Approval (Email + API)
+
+This workflow supports dual-path processing:
+- Employee can submit leave via Gmail inbox parsing (primary) or `POST /leave/request` (override).
+- Manager can decide via Gmail reply (primary) or `POST /leave/manager_reply` (override).
+
+Processing behavior:
+- Request creation is non-blocking by default and returns `PENDING_MANAGER`.
+- No automatic timeout rejection is applied.
+- Multiple pending requests can be processed independently.
+
 ### `basic_workflow.py` - Math Calculator 🧮
 
 **Super simple workflow for beginners!** Takes 2 numbers and performs all 4 basic math operations.

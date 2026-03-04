@@ -112,6 +112,24 @@ python test_workflow_api.py
 
 ---
 
+## Leave workflow Gmail mode (new)
+
+If you want Gmail to be the primary method:
+
+1. Set env vars (in `.env` or shell):
+   - `GMAIL_FROM`
+   - `GMAIL_APP_PASSWORD`
+   - `SEND_LEAVE_EMAILS_VIA_GMAIL=1`
+   - optional: `ENABLE_GMAIL_LEAVE_INTAKE=1` (default enabled)
+2. Start the app. It will poll inbox in background.
+3. Optional manual trigger:
+   - `POST /leave/gmail/process`
+4. API override paths still work:
+   - `POST /leave/request`
+   - `POST /leave/manager_reply`
+
+---
+
 ## Workflow status
 
 - **`status: "correct"`** – Math Checker agent said all results are correct.

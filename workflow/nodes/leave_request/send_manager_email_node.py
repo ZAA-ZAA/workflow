@@ -1,8 +1,7 @@
-"""Send email to manager with full context and instructions to Approve/Reject."""
+﻿"""Send email to manager with full context and approval instructions."""
 
 import os
 
-from app.leave_request_db import get_employee
 from app.leave_request_email import send_leave_email
 from .state import LeaveRequestState
 
@@ -12,6 +11,7 @@ def _recent_history_summary(employee: dict, limit: int = 3) -> str:
     recent = history[-limit:] if len(history) > limit else history
     if not recent:
         return "No recent leave history."
+
     lines = []
     for h in reversed(recent):
         lines.append(
@@ -23,9 +23,9 @@ def _recent_history_summary(employee: dict, limit: int = 3) -> str:
 
 def send_manager_email_node(state: LeaveRequestState) -> LeaveRequestState:
     """
-    Build and send email to manager with: employee name/id, leave type, dates,
-    reason, current balance, recent leave history. Asks manager to reply via
-    POST /leave/manager_reply with request_id and decision (APPROVE/REJECT).
+    Build and send email to manager with leave context and two response methods:
+    - reply to email (primary)
+    - API curl override
     """
     request_id = state.get("request_id")
     manager_email = state.get("manager_email")
@@ -39,20 +39,20 @@ def send_manager_email_node(state: LeaveRequestState) -> LeaveRequestState:
     end = state.get("end_date", "")
     reason = state.get("reason", "") or "No reason provided."
 
-    annual_remaining = (
-        employee.get("annual_leave_entitlement", 0) - employee.get("annual_leave_used", 0)
-    )
+    annual_remaining = employee.get("annual_leave_entitlement", 0) - employee.get("annual_leave_used", 0)
     sick_balance = employee.get("sick_leave_balance", 0)
-    balance_line = (
-        f"Annual leave remaining: {annual_remaining} days. Sick leave balance: {sick_balance} days."
-    )
+
     if leave_type == "annual":
-        balance_line = f"Annual leave remaining: {annual_remaining} days (this request uses days in the given range). Sick leave balance: {sick_balance} days."
+        balance_line = (
+            f"Annual leave remaining: {annual_remaining} days "
+            f"(this request uses days in the given range). Sick leave balance: {sick_balance} days."
+        )
     elif leave_type == "sick":
         balance_line = f"Sick leave balance: {sick_balance} days. Annual leave remaining: {annual_remaining} days."
+    else:
+        balance_line = f"Annual leave remaining: {annual_remaining} days. Sick leave balance: {sick_balance} days."
 
     recent = _recent_history_summary(employee, 3)
-
     subject = f"Leave Request Approval: {employee.get('name')} ({state.get('employee_id')}) - {start} to {end}"
 
     base_url = os.getenv("LEAVE_BASE_URL", "http://localhost:9999").rstrip("/")
@@ -75,33 +75,37 @@ Request ID: {request_id}
 
 HOW TO RESPOND (choose one):
 
-  Option 1 — Reply to this email (easiest)
-  Simply reply to this message with your decision. You can write for example:
-  • To APPROVE: "Approved", "APPROVE", "Yes", "OK", or "I approve"
-  • To REJECT: "Rejected", "REJECT", "No", or "Denied"
-  You can add a short comment in the same reply if you want. The system will read your reply and process it automatically.
+Option 1 - Reply to this email (primary)
+Reply with both fields so the system can identify the exact request:
+Request ID: {request_id}
+Decision: APPROVE or REJECT
+Optional Comment: your note
 
-  Option 2 — Use the API (alternative / override)
-  If you prefer, you can submit your decision by calling the API (e.g. from a terminal):
+Examples:
+Request ID: {request_id}
+Decision: APPROVE
+Comment: Approved
 
-  APPROVE:
-  curl -X POST "{base_url}/leave/manager_reply" \\
-    -H "Content-Type: application/json" \\
-    -d '{{"request_id": "{request_id}", "decision": "APPROVE", "comment": "Optional comment"}}'
+Request ID: {request_id}
+Decision: REJECT
+Comment: Peak period
 
-  REJECT:
-  curl -X POST "{base_url}/leave/manager_reply" \\
-    -H "Content-Type: application/json" \\
-    -d '{{"request_id": "{request_id}", "decision": "REJECT", "comment": "Optional reason"}}'
+Option 2 - Use the API (override)
+APPROVE:
+curl -X POST "{base_url}/leave/manager_reply" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"request_id": "{request_id}", "decision": "APPROVE", "comment": "Optional comment"}}'
+
+REJECT:
+curl -X POST "{base_url}/leave/manager_reply" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"request_id": "{request_id}", "decision": "REJECT", "comment": "Optional reason"}}'
 """
 
-    success, _ = send_leave_email(manager_email, subject, body)
+    success, message = send_leave_email(manager_email, subject, body)
     if success:
         print("[Leave Workflow] Email sent to manager: " + manager_email)
+        return {**state, "manager_email_sent": True, "step": "pending_manager"}
     else:
-        print("[Leave Workflow] WARNING: Failed to send email to manager: " + manager_email)
-    return {
-        **state,
-        "manager_email_sent": success,
-        "step": "pending_manager",
-    }
+        print("[Leave Workflow] ERROR: Failed to send email to manager: " + manager_email + " | " + message)
+        return {**state, "manager_email_sent": False, "step": "email_failed"}

@@ -1,8 +1,57 @@
-# Math Workflow API
+﻿# Math Workflow API
+
+## Leave Workflow Update (March 3, 2026)
+
+The leave workflow now supports two methods for each step:
+
+1. Request creation:
+   - Method A (primary): employee sends Gmail email; AI parses details.
+   - Method B (override): call `POST /leave/request`.
+2. Manager decision:
+   - Method A (primary): manager replies by Gmail; AI parses decision.
+   - Method B (override): call `POST /leave/manager_reply`.
+
+`POST /leave/request` is non-blocking by default and returns `PENDING_MANAGER`.
+Requests stay pending until a valid manager decision is received.
+
+### Gmail intake endpoint
+
+- `POST /leave/gmail/process`
+  - Starts continuous Gmail loop (default) and processes inbox immediately.
+  - Use `start_loop=false` for one-shot processing only.
+- `GET /leave/gmail/poller/status`
+  - Check if loop is running and last cycle summary.
+- `POST /leave/gmail/poller/start`
+  - Start loop explicitly (optional).
+- `POST /leave/gmail/poller/stop`
+  - Stop loop.
+
+### Gmail background processing
+
+- Enabled when loop is started and `ENABLE_GMAIL_LEAVE_INTAKE=1`.
+- Poll interval default: `LEAVE_GMAIL_POLL_SECONDS=20`
+- First-run backlog guard: `LEAVE_GMAIL_SKIP_EXISTING_ON_FIRST_RUN=1` (default)
+  - Skips historical inbox messages the first time so old emails are not reprocessed.
+
+### Can employees/managers write in normal sentences?
+
+Yes. AI parsing is enabled, so they do not need to follow an exact rigid template.
+But these fields must still be present in the text:
+
+- Employee request required details:
+  - employee identity (`Employee ID` or identifiable email/name)
+  - leave type (`annual` or `sick`)
+  - start date (`YYYY-MM-DD`)
+  - end date (`YYYY-MM-DD`)
+- Manager reply required details:
+  - `Request ID` (for example `LR-0001`)
+  - decision (`APPROVE` or `REJECT`)
+
+If required details are missing/invalid, the system sends an error email asking for corrections.
 
 The math workflow is now available as a REST API endpoint in the FastAPI application!
 
-## 🚀 Quick Start
+## ðŸš€ Quick Start
 
 ### 1. Start the Server
 
@@ -34,7 +83,7 @@ curl -X POST "http://localhost:8000/workflow/math" \
   -d '{"num1": 10, "num2": 5}'
 ```
 
-## 📡 API Endpoint
+## ðŸ“¡ API Endpoint
 
 ### POST `/workflow/math`
 
@@ -73,11 +122,11 @@ Execute the basic math workflow with two numbers.
 - `results`: Object containing all calculation results
   - `addition`: Sum of num1 + num2
   - `subtraction`: Difference of num1 - num2
-  - `multiplication`: Product of num1 × num2
-  - `division`: Quotient of num1 ÷ num2 (string to handle division by zero)
+  - `multiplication`: Product of num1 Ã— num2
+  - `division`: Quotient of num1 Ã· num2 (string to handle division by zero)
 - `status`: Workflow completion status
 
-## 📋 Examples
+## ðŸ“‹ Examples
 
 ### Example 1: Basic Calculation
 ```bash
@@ -167,7 +216,7 @@ curl -X POST "http://localhost:8000/workflow/math" \
 }
 ```
 
-## 🐍 Using Python
+## ðŸ Using Python
 
 ```python
 import requests
@@ -184,7 +233,7 @@ print(f"Multiplication: {result['results']['multiplication']}")
 print(f"Division: {result['results']['division']}")
 ```
 
-## 🌐 Interactive API Docs
+## ðŸŒ Interactive API Docs
 
 FastAPI provides automatic interactive API documentation:
 
@@ -193,42 +242,65 @@ FastAPI provides automatic interactive API documentation:
 
 You can test the endpoint directly from the Swagger UI!
 
-## 🔍 Other Endpoints
+## ðŸ” Other Endpoints
 
 The API also includes:
 - `GET /health` - Health check endpoint
 - `POST /agent/chat` - Basic OpenAI chat
 - `POST /agent/zoey/chat` - Zoey agent with tool calling
-- Leave Request Workflow: `POST /leave/request`, `POST /leave/manager_reply`, `GET /leave/status/{request_id}`, `GET /leave/employees/{employee_id}` (see below)
+- Leave Request Workflow: `POST /leave/request`, `POST /leave/manager_reply`, `POST /leave/gmail/process`, `GET /leave/status/{request_id}`, `GET /leave/employees/{employee_id}` (see below)
 
 ---
 
-## 📋 Leave Request Approval Workflow
+## ðŸ“‹ Leave Request Approval Workflow
 
-**Single-curl flow (default):** One **POST /leave/request** runs the workflow start to finish: it sends the email to the manager, then waits for a reply (by polling Gmail or by detecting **POST /leave/manager_reply** from another terminal). When the manager's decision is in, it applies it and notifies the employee, then returns. Use **?wait=false** to return immediately with PENDING_MANAGER.
+**Default flow:** `POST /leave/request` creates the request and returns `PENDING_MANAGER` immediately. Manager decision is processed later by Gmail reply intake or by `POST /leave/manager_reply`.
 
-The workflow runs in two steps: (1) employee submits a request → system checks balance and emails the manager; (2) manager replies via API → system updates balance and notifies the employee.
+The workflow runs in two steps: (1) employee submits a request â†’ system checks balance and emails the manager; (2) manager replies via API â†’ system updates balance and notifies the employee.
 
 **Base URL:** Use `http://localhost:9999` if running with Docker (port 9999), or `http://localhost:8000` if running uvicorn locally.
 
 ### How manager approval works (emails vs API)
 
-- **Where emails come from**  
-  The addresses in `data/employees.json` are used when sending:
-  - **Manager:** `manager_email` on each employee is used as the **To** address for the “please approve/reject” email.
-  - **Employee:** `email` on each employee is used as the **To** address for the approval or rejection notification.
+- Employee request methods:
+  - Primary: send leave-request email to the configured inbox (`GMAIL_FROM`) with required fields.
+  - Override: call `POST /leave/request`.
 
-- **Does the workflow wait for a reply in Gmail?**  
-  **No.** The app does not read the manager’s Gmail inbox. When we say the workflow “waits for the manager,” we mean:
-  - The request stays in status `PENDING_MANAGER` until someone (usually the manager) calls the API.
-  - The **only** way to approve or reject is to call **POST /leave/manager_reply** with `request_id` and `decision` (APPROVE or REJECT). The email we send to the manager contains the curl commands so they can do that.
-  - So there is **one** way to respond: use the API. The two “options” are the two **decisions** (APPROVE vs REJECT), not “reply by email” vs “call API.” Replying to the email in Gmail does **not** update the workflow unless you add something like Gmail API polling (not included here).
+- Manager decision methods:
+  - Primary: reply by email with explicit `Request ID` and `Decision`.
+  - Override: call `POST /leave/manager_reply`.
 
-- **Summary**
-  - Emails **to** manager and **to** employee use the addresses from `data/employees.json` (and Gmail if configured).
-  - The workflow **waits** for a reply: it polls Gmail (IMAP) for a reply from the manager and uses an AI agent to parse APPROVE/REJECT, or you can submit the decision from another terminal via **POST /leave/manager_reply**.
+- Waiting behavior:
+  - Leave requests stay `PENDING_MANAGER` until a valid manager decision is processed.
+  - There is no automatic timeout rejection.
+  - `POST /leave/request` is non-blocking by default (`wait=false` by default).
 
-**Single-curl behavior:** By default, **POST /leave/request** blocks until the manager has replied (via Gmail or API) or the timeout (see `LEAVE_WAIT_TIMEOUT_SECONDS`). So one curl runs the workflow start to finish. Use `?wait=false` to return immediately with PENDING_MANAGER and then use **POST /leave/manager_reply** separately.
+- Gmail processing:
+  - Background poller processes inbox continuously when `ENABLE_GMAIL_LEAVE_INTAKE=1`.
+  - Start loop + process now: `POST /leave/gmail/process`.
+  - One-shot only: `POST /leave/gmail/process?start_loop=false`.
+
+### Test endpoints
+
+```bash
+# Process Gmail inbox once (request emails + manager reply emails)
+curl -X POST "http://localhost:9999/leave/gmail/process?start_loop=false"
+
+# Start continuous Gmail loop and process immediately
+curl -X POST "http://localhost:9999/leave/gmail/process"
+
+# Check loop status
+curl "http://localhost:9999/leave/gmail/poller/status"
+
+# Start loop manually if needed
+curl -X POST "http://localhost:9999/leave/gmail/poller/start"
+
+# Stop loop
+curl -X POST "http://localhost:9999/leave/gmail/poller/stop"
+
+# Health
+curl "http://localhost:9999/health"
+```
 
 ### Create a leave request
 
@@ -249,8 +321,44 @@ curl -X POST "http://localhost:9999/leave/request" \
 {
   "request_id": "LR-0001",
   "status": "PENDING_MANAGER",
-  "message": "Request created; manager has been emailed. Awaiting manager reply via POST /leave/manager_reply."
+  "message": "Request created; manager has been emailed. Awaiting manager reply via email or POST /leave/manager_reply."
 }
+```
+
+### Create multiple leave requests (parallel workflow style)
+
+```bash
+# Request 1: Zoen
+curl -X POST "http://localhost:9999/leave/request" \
+  -H "Content-Type: application/json" \
+  -d '{"employee_id":"E001","leave_type":"annual","start_date":"2026-03-10","end_date":"2026-03-12","reason":"Family trip"}'
+
+# Request 2: Carlos
+curl -X POST "http://localhost:9999/leave/request" \
+  -H "Content-Type: application/json" \
+  -d '{"employee_id":"E002","leave_type":"sick","start_date":"2026-03-11","end_date":"2026-03-11","reason":"Flu"}'
+```
+
+Each returns a different `request_id` and can be processed independently.
+
+### Gmail employee request samples (Method A - primary)
+
+Structured sample:
+
+```text
+Subject: Leave request for March 10 to March 12
+Employee ID: E001
+Leave Type: annual
+Start Date: 2026-03-10
+End Date: 2026-03-12
+Reason: Family trip
+```
+
+Sentence-style sample (AI parser supported):
+
+```text
+Subject: Need leave next week
+Hi, this is Zoen Aldueza (E001). I want to file annual leave from 2026-03-10 to 2026-03-12 for a family trip. Thank you.
 ```
 
 ### Manager reply (approve or reject)
@@ -267,6 +375,45 @@ curl -X POST "http://localhost:9999/leave/manager_reply" \
   -d '{"request_id": "LR-0001", "decision": "REJECT", "comment": "Peak period"}'
 ```
 
+### Manager reply for multiple pending requests (Method B - override)
+
+```bash
+# Approve only LR-0001, leave LR-0002 pending
+curl -X POST "http://localhost:9999/leave/manager_reply" \
+  -H "Content-Type: application/json" \
+  -d '{"request_id":"LR-0001","decision":"APPROVE","comment":"Approved"}'
+
+# Later, decide LR-0002
+curl -X POST "http://localhost:9999/leave/manager_reply" \
+  -H "Content-Type: application/json" \
+  -d '{"request_id":"LR-0002","decision":"REJECT","comment":"Team capacity"}'
+```
+
+### Gmail manager reply samples (Method A - primary)
+
+Structured sample:
+
+```text
+Subject: Re: Leave Request Approval
+Request ID: LR-0001
+Decision: APPROVE
+Comment: Approved
+```
+
+Sentence-style sample (AI parser supported):
+
+```text
+Subject: Re: Leave Request Approval for Zoen
+Please approve request LR-0001. Looks good from my side.
+```
+
+Another sentence-style reject sample:
+
+```text
+Subject: Re: Leave Request Approval
+For LR-0002, please reject this one due to peak period staffing.
+```
+
 ### Check request status
 
 ```bash
@@ -281,22 +428,22 @@ curl "http://localhost:9999/leave/employees/E001"
 
 ---
 
-## 📧 Gmail setup (optional)
+## ðŸ“§ Gmail setup (optional)
 
 By default, leave emails are **logged to the console** only. To send real emails via Gmail:
 
 1. **Use an App Password (not your normal Gmail password)**  
-   - Go to [Google Account → Security](https://myaccount.google.com/security).  
+   - Go to [Google Account â†’ Security](https://myaccount.google.com/security).  
    - Enable **2-Step Verification** if it is not already on.  
-   - Open **2-Step Verification** → at the bottom, **App passwords**.  
+   - Open **2-Step Verification** â†’ at the bottom, **App passwords**.  
    - Select app: **Mail**, device: **Other** (e.g. "Leave Workflow"), then **Generate**.  
    - Copy the 16-character password (no spaces).
 
 2. **Set environment variables**  
-   - `GMAIL_FROM` – Gmail address that sends (e.g. `you@gmail.com`).  
-   - `GMAIL_APP_PASSWORD` – the 16-character app password.  
-   - `SEND_LEAVE_EMAILS_VIA_GMAIL=1` – enable sending (otherwise emails are only logged).  
-   - Optional: `LEAVE_BASE_URL` – base URL for the manager reply links in the email (default `http://localhost:9999`).
+   - `GMAIL_FROM` â€“ Gmail address that sends (e.g. `you@gmail.com`).  
+   - `GMAIL_APP_PASSWORD` â€“ the 16-character app password.  
+   - `SEND_LEAVE_EMAILS_VIA_GMAIL=1` â€“ enable sending (otherwise emails are only logged).  
+   - Optional: `LEAVE_BASE_URL` â€“ base URL for the manager reply links in the email (default `http://localhost:9999`).
 
    See `.env.example` for a template. Example `.env`:
    ```bash
@@ -313,32 +460,33 @@ By default, leave emails are **logged to the console** only. To send real emails
 
 ---
 
-## 💡 Behind the Scenes
+## ðŸ’¡ Behind the Scenes
 
 This endpoint uses the LangGraph workflow defined in:
 ```
 workflow/
-├── basic_workflow.py      # Workflow orchestration
-└── nodes/basic/
-    ├── input_node.py      # Input validation
-    ├── calculate_node.py  # Math operations
-    └── output_node.py     # Result formatting
+â”œâ”€â”€ basic_workflow.py      # Workflow orchestration
+â””â”€â”€ nodes/basic/
+    â”œâ”€â”€ input_node.py      # Input validation
+    â”œâ”€â”€ calculate_node.py  # Math operations
+    â””â”€â”€ output_node.py     # Result formatting
 ```
 
-The workflow executes as: `START → input → calculate → output → END`
+The workflow executes as: `START â†’ input â†’ calculate â†’ output â†’ END`
 
 ---
 
-## 💡 Leave workflow structure
+## ðŸ’¡ Leave workflow structure
 
 Leave request nodes live under `workflow/nodes/leave_request/`:
-- `input_validate_node` → `check_balance_node` → `create_request_node` → `send_manager_email_node` (then workflow waits for manager).
-- When manager replies: `apply_decision_node` → `notify_employee_node`.
+- `input_validate_node` â†’ `check_balance_node` â†’ `create_request_node` â†’ `send_manager_email_node` (then workflow waits for manager).
+- When manager replies: `apply_decision_node` â†’ `notify_employee_node`.
 - Data: `data/employees.json`, `data/leave_requests.json` (mock DB).
 
 ---
 
-## 📌 Academic vs industry: mock DB vs separate DB service
+## ðŸ“Œ Academic vs industry: mock DB vs separate DB service
 
 - **Academic / prototype:** A JSON mock DB in the same project is **acceptable and often better**: simple, no extra services, easy to demo and grade. Use it when the goal is to show workflow logic, APIs, and human-in-the-loop behaviour.
-- **When to split:** Use a separate DB (or DB API service) when you need real concurrency, audit trails, backups, or multiple apps sharing the same data. In industry, the “leave” service would often call an HR/identity API and a proper database; the workflow you built can stay the same, with only the data layer (e.g. `app/leave_request_db.py`) swapped to use that API/DB.
+- **When to split:** Use a separate DB (or DB API service) when you need real concurrency, audit trails, backups, or multiple apps sharing the same data. In industry, the â€œleaveâ€ service would often call an HR/identity API and a proper database; the workflow you built can stay the same, with only the data layer (e.g. `app/leave_request_db.py`) swapped to use that API/DB.
+

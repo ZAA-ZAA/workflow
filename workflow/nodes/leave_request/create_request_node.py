@@ -1,6 +1,8 @@
 """Create leave request record and store with PENDING_MANAGER status."""
 
-from app.leave_request_db import add_leave_request, get_next_request_id
+import time
+
+from app.leave_request_db import add_leave_request, get_leave_request, get_next_request_id
 from .state import LeaveRequestState
 
 
@@ -22,7 +24,17 @@ def create_request_node(state: LeaveRequestState) -> LeaveRequestState:
     if not employee:
         return {**state, "step": "create_failed"}
 
-    request_id = f"LR-{get_next_request_id():04d}"
+    # Build a collision-resistant numeric request id so old inbox replies
+    # cannot accidentally match newly created requests after restarts.
+    request_id = ""
+    for _ in range(5):
+        seq = get_next_request_id()
+        candidate = f"LR-{int(time.time())}{seq:04d}"
+        if not get_leave_request(candidate):
+            request_id = candidate
+            break
+    if not request_id:
+        return {**state, "step": "create_failed"}
     days = _days_between(state.get("start_date", ""), state.get("end_date", ""))
 
     record = {

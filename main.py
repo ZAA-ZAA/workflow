@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+import time
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -8,10 +10,18 @@ from openai import OpenAI
 from agents import execute_tool_by_name, get_tool_specs
 from app.agents.zoey_agent import create_zoey_agent
 from app.leave_request_db import get_employee, get_leave_request
+from app.leave_request_gmail_processor import process_all_leave_emails
 from workflow.basic_workflow import run_workflow
 from workflow.leave_request_workflow import run_manager_reply_flow, run_request_flow, run_request_flow_with_wait
 
 app = FastAPI()
+_GMAIL_POLLER_STARTED = False
+_GMAIL_POLLER_INTERVAL_SECONDS = 20
+_GMAIL_POLLER_THREAD: threading.Thread | None = None
+_GMAIL_POLLER_STOP_EVENT = threading.Event()
+_GMAIL_POLLER_LAST_SUMMARY: dict | None = None
+_GMAIL_POLLER_LAST_RUN_AT: float | None = None
+_GMAIL_POLLER_CYCLE_COUNT: int = 0
 
 
 class ChatRequest(BaseModel):
@@ -48,6 +58,83 @@ def _get_openai_client() -> OpenAI:
         # Fail fast with a helpful error when the key is missing.
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set")
     return OpenAI(api_key=api_key)
+
+
+def _gmail_intake_enabled() -> bool:
+    return os.getenv("ENABLE_GMAIL_LEAVE_INTAKE", "1").strip().lower() in ("1", "true", "yes")
+
+
+def _gmail_intake_loop() -> None:
+    global _GMAIL_POLLER_LAST_SUMMARY, _GMAIL_POLLER_LAST_RUN_AT, _GMAIL_POLLER_CYCLE_COUNT
+    print(f"[Leave Gmail] Loop running. Interval: {_GMAIL_POLLER_INTERVAL_SECONDS}s")
+    while not _GMAIL_POLLER_STOP_EVENT.is_set():
+        try:
+            _GMAIL_POLLER_CYCLE_COUNT += 1
+            summary = process_all_leave_emails()
+            _GMAIL_POLLER_LAST_SUMMARY = summary
+            _GMAIL_POLLER_LAST_RUN_AT = time.time()
+            req = summary.get("employee_requests", {})
+            rep = summary.get("manager_replies", {})
+            if any(
+                [
+                    req.get("processed", 0),
+                    req.get("created", 0),
+                    req.get("errors", 0),
+                    rep.get("processed", 0),
+                    rep.get("applied", 0),
+                    rep.get("errors", 0),
+                ]
+            ):
+                print(f"[Leave Gmail] Poll summary: {summary}")
+            else:
+                print(f"[Leave Gmail] Poll tick #{_GMAIL_POLLER_CYCLE_COUNT}: no new leave emails")
+        except Exception as exc:
+            print(f"[Leave Gmail] Poller error: {exc}")
+        _GMAIL_POLLER_STOP_EVENT.wait(_GMAIL_POLLER_INTERVAL_SECONDS)
+    print("[Leave Gmail] Loop stopped.")
+
+
+@app.on_event("startup")
+def start_gmail_intake_poller():
+    # Auto-start continuous polling when app starts.
+    started = _start_gmail_intake_poller()
+    print(f"[Leave Gmail] Startup poller state: {started}")
+
+
+def _start_gmail_intake_poller(interval_seconds: int | None = None, force: bool = False) -> dict:
+    global _GMAIL_POLLER_STARTED, _GMAIL_POLLER_INTERVAL_SECONDS, _GMAIL_POLLER_THREAD
+    if not _gmail_intake_enabled() and not force:
+        return {"started": False, "enabled": False, "message": "Gmail intake disabled by env"}
+    if interval_seconds is not None and interval_seconds > 0:
+        _GMAIL_POLLER_INTERVAL_SECONDS = int(interval_seconds)
+    if _GMAIL_POLLER_STARTED:
+        return {
+            "started": True,
+            "enabled": _gmail_intake_enabled(),
+            "interval_seconds": _GMAIL_POLLER_INTERVAL_SECONDS,
+            "message": "Gmail poller already running",
+        }
+    _GMAIL_POLLER_STOP_EVENT.clear()
+    thread = threading.Thread(target=_gmail_intake_loop, daemon=True, name="leave-gmail-poller")
+    thread.start()
+    _GMAIL_POLLER_THREAD = thread
+    _GMAIL_POLLER_STARTED = True
+    return {
+        "started": True,
+        "enabled": _gmail_intake_enabled(),
+        "interval_seconds": _GMAIL_POLLER_INTERVAL_SECONDS,
+        "message": "Gmail poller started",
+    }
+
+
+def _stop_gmail_intake_poller() -> dict:
+    global _GMAIL_POLLER_STARTED, _GMAIL_POLLER_THREAD
+    if not _GMAIL_POLLER_STARTED:
+        return {"stopped": False, "message": "Gmail poller is not running"}
+    _GMAIL_POLLER_STOP_EVENT.set()
+    _GMAIL_POLLER_STARTED = False
+    _GMAIL_POLLER_THREAD = None
+    return {"stopped": True, "message": "Gmail poller stopping"}
 
 
 @app.get("/health")
@@ -137,13 +224,12 @@ def zoey_chat(request: ZoeyChatRequest):
 
 
 @app.post("/leave/request")
-def leave_request(request: LeaveRequestRequest, wait: bool = True):
+def leave_request(request: LeaveRequestRequest, wait: bool = False):
     """
-    Run the leave workflow start-to-finish: validate, check balance, create
-    request, email manager, then wait for manager reply (from Gmail inbox or
-    from POST /leave/manager_reply in another terminal). When reply is
-    received, apply decision and notify employee, then return.
-    Use ?wait=false to return immediately with PENDING_MANAGER (old behavior).
+    API override path for creating a leave request directly via JSON.
+    Default behavior is non-blocking and returns PENDING_MANAGER immediately.
+    Use ?wait=true if you explicitly want this HTTP call to block until a
+    manager decision is observed.
     """
     if wait:
         result = run_request_flow_with_wait(
@@ -161,9 +247,56 @@ def leave_request(request: LeaveRequestRequest, wait: bool = True):
             end_date=request.end_date,
             reason=request.reason,
         )
-    if result.get("status") not in ("PENDING_MANAGER", "APPROVED", "REJECTED", "TIMEOUT") and result.get("request_id") is None:
+    if result.get("status") not in ("PENDING_MANAGER", "APPROVED", "REJECTED") and result.get("request_id") is None:
         raise HTTPException(status_code=400, detail=result.get("message", "Leave request failed"))
     return result
+
+
+@app.post("/leave/gmail/process")
+def leave_gmail_process():
+    """
+    One-shot Gmail processing cycle (employee requests + manager replies).
+    """
+    summary = process_all_leave_emails()
+    return {
+        "poller": {
+            "started": _GMAIL_POLLER_STARTED,
+            "enabled": _gmail_intake_enabled(),
+            "interval_seconds": _GMAIL_POLLER_INTERVAL_SECONDS,
+            "message": "one-shot completed",
+        },
+        "summary": summary,
+    }
+
+
+@app.get("/leave/gmail/poller/status")
+def leave_gmail_poller_status():
+    """
+    Returns Gmail poller runtime status so operators can verify auto mode.
+    """
+    return {
+        "enabled_by_env": _gmail_intake_enabled(),
+        "running": _GMAIL_POLLER_STARTED,
+        "interval_seconds": _GMAIL_POLLER_INTERVAL_SECONDS,
+        "cycle_count": _GMAIL_POLLER_CYCLE_COUNT,
+        "last_run_at_unix": _GMAIL_POLLER_LAST_RUN_AT,
+        "last_summary": _GMAIL_POLLER_LAST_SUMMARY,
+    }
+
+
+@app.post("/leave/gmail/poller/start")
+def leave_gmail_poller_start(force: bool = False, interval_seconds: int | None = None):
+    """
+    Start Gmail background poller manually.
+    Use force=true to start even if ENABLE_GMAIL_LEAVE_INTAKE is off.
+    """
+    return _start_gmail_intake_poller(interval_seconds=interval_seconds, force=force)
+
+
+@app.post("/leave/gmail/poller/stop")
+def leave_gmail_poller_stop():
+    """Stop Gmail background poller."""
+    return _stop_gmail_intake_poller()
 
 
 @app.post("/leave/manager_reply")
@@ -240,4 +373,3 @@ def math_workflow(request: MathWorkflowRequest):
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-

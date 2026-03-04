@@ -52,7 +52,10 @@ Request ID: {request_id}
             body += f"\nManager comment: {comment}\n"
 
     print("[Leave Workflow] Sending result to employee: " + (to or ""))
-    send_leave_email(to, subject, body)
+    success, message = send_leave_email(to, subject, body)
+    if not success:
+        print("[Leave Workflow] WARNING: Failed to notify employee: " + message)
+        return {**state, "step": "notify_failed"}
     return {
         **state,
         "step": "completed",
